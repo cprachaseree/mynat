@@ -11,7 +11,7 @@ int FILL_RATE;
 // NAT table has to be used in both threads
 struct nat *nat_entries;
 // user space buffer used in both threads
-nfq_data **packets = (nfq_data **) calloc(10, sizeof(nfq_data *));
+struct buffer buf;
 
 pthread_mutex_t nat_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t userbuffer_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -24,6 +24,7 @@ void *direct_packets(void *args);
 void *process_packets(void *args);
 static int Callback(nfq_q_handle* myQueue, struct nfgenmsg* msg, 
 		nfq_data* pkt, void *cbData);
+void init_buffer();
 
 
 
@@ -35,6 +36,8 @@ int main(int argc, char **argv) {
 	get_args(argc, argv);
 	// IP and LAN is in network byte order. BUCKET_SIZE and FILL_RATE is int
 
+	// set buffer size to 10 and end to 0
+	init_buffer();
 	// create threads
 	pthread_t threads[2];
 	if ((pthread_create(&threads[0], NULL, direct_packets, NULL) != 0) ||
@@ -42,13 +45,41 @@ int main(int argc, char **argv) {
 		printf("Error creating thread.");
 	}
 	if ((pthread_join(threads[0], NULL) != 0) ||
-		(pthread_join(threads[1], NULL))) {
+		(pthread_join(threads[1], NULL)) != 0) {
 		printf("Error joining thread.");
 	}
 	return 0;
 }
 
 void *process_packets(void *args) {
+	int i, destination_port, is_outbound;
+	nfq_data *packet;
+	struct iphdr *ipHeader;
+	struct udphdr *udpHeader;
+	while (1) {
+		for (i = 0; i < 10; i++) {
+			packet = buf.packets[i];
+			// get ip info of packet
+			ipHeader = (struct iphdr *) packet;
+			printf("Received Source IP: %u\n", ntohl(ipHeader->saddr));
+			printf("Received Destination IP: %u\n", ntohl(ipHeader->daddr));
+			printf("Received IP Checksum: %d\n", ntohl(ipHeader->check));
+			printf("\n");
+			
+			// get port number from udp header
+			udpHeader = (struct udphdr *) (((char *) ipHeader) + ipHeader->ihl*4);
+			printf("Received Source port: %u\n", udpHeader->source);
+			printf("Received Destination port: %u\n", udpHeader->dest);
+			printf("Received UDP Checksum: %u\n", udpHeader->check);
+
+			is_outbound = check_inbound_or_outbound(ntohl(ipHeader->saddr));
+			if (is_outbound == 0) {
+				// process_inbound_packets(packet);
+			} else if (is_outbound == 1) {
+				//process_outbound_packets(packet);
+			}
+		}
+	}
 	pthread_exit(NULL);
 }
 
@@ -244,3 +275,7 @@ int check_inbound_or_outbound(int source_ip) {
 	}	
 }
 
+void init_buffer() {
+	buf.end = 0;
+	buf.packets = (nfq_data **) calloc(10, sizeof(nfq_data *));
+}

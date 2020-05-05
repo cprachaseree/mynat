@@ -24,3 +24,7 @@ struct nat {
 	time_t timestamp;
 };
 
+struct buffer {
+	int end;
+	nfq_data **packets;
+};
