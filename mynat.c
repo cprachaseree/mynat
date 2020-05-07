@@ -1,4 +1,5 @@
 #include "mynat.h"
+#include "checksum.h"
 
 // Arguments from argv
 int IP;
@@ -25,6 +26,8 @@ void *process_packets(void *args);
 static int Callback(nfq_q_handle* myQueue, struct nfgenmsg* msg, 
 		nfq_data* pkt, void *cbData);
 void init_buffer();
+void process_inbound_packets(nfq_data* packet);
+void process_outbound_packets(nfq_data* packet);
 
 
 
@@ -57,30 +60,128 @@ void *process_packets(void *args) {
 	struct iphdr *ipHeader;
 	struct udphdr *udpHeader;
 	while (1) {
-		for (i = 0; i < 10; i++) {
-			packet = buf.packets[i];
-			// get ip info of packet
-			ipHeader = (struct iphdr *) packet;
-			printf("Received Source IP: %u\n", ntohl(ipHeader->saddr));
-			printf("Received Destination IP: %u\n", ntohl(ipHeader->daddr));
-			printf("Received IP Checksum: %d\n", ntohl(ipHeader->check));
-			printf("\n");
-			
-			// get port number from udp header
-			udpHeader = (struct udphdr *) (((char *) ipHeader) + ipHeader->ihl*4);
-			printf("Received Source port: %u\n", udpHeader->source);
-			printf("Received Destination port: %u\n", udpHeader->dest);
-			printf("Received UDP Checksum: %u\n", udpHeader->check);
-
-			is_outbound = check_inbound_or_outbound(ntohl(ipHeader->saddr));
-			if (is_outbound == 0) {
-				// process_inbound_packets(packet);
-			} else if (is_outbound == 1) {
-				//process_outbound_packets(packet);
-			}
+		pthread_mutex_lock(&userbuffer_lock);
+		if (buf.end == -1) {
+			continue;
+			pthread_mutex_unlock(&userbuffer_lock);
 		}
+		packet = buf.packets[0];
+		pthread_mutex_unlock(&userbuffer_lock);
+		// get ip info of packet
+		ipHeader = (struct iphdr *) packet;
+		printf("Received Source IP: %u\n", ntohl(ipHeader->saddr));
+		printf("Received Destination IP: %u\n", ntohl(ipHeader->daddr));
+		printf("Received IP Checksum: %d\n", ntohl(ipHeader->check));
+		printf("\n");
+			
+		// get port number from udp header
+		udpHeader = (struct udphdr *) (((char *) ipHeader) + ipHeader->ihl*4);
+		printf("Received Source port: %u\n", udpHeader->source);
+		printf("Received Destination port: %u\n", udpHeader->dest);
+		printf("Received UDP Checksum: %u\n", udpHeader->check);
+
+		is_outbound = check_inbound_or_outbound(ntohl(ipHeader->saddr));
+		if (is_outbound == 0) {
+			process_inbound_packets(packet);
+		} else if (is_outbound == 1) {
+			process_outbound_packets(packet);
+		}
+
+		// send out packet by waiting for tokens
+
+		// move up the queue
+		pthread_mutex_lock(&userbuffer_lock);
+		for (i = 1; i < buf.end; i++) {
+			buf.packets[i-1] = buf.packets[i];
+		}
+		buf.packets[buf.end] = NULL;
+		buf.end--;
+		pthread_mutex_unlock(&userbuffer_lock);
 	}
 	pthread_exit(NULL);
+}
+
+void process_inbound_packets(nfq_data* packet) {
+	int i;
+	struct iphdr *ipHeader;
+	struct udphdr *udpHeader;
+	unsigned int ip_in_nat, destination_ip, source_port, destination_port, 
+		trans_port;
+	struct in_addr addr;
+
+	ipHeader = (struct iphdr *) packet;
+	destination_ip = ntohl(ipHeader->daddr);
+	printf("Received Destination IP: %u\n", destination_ip);
+	printf("\n");
+			
+	// get port number from udp header
+	udpHeader = (struct udphdr *) (((char *) ipHeader) + ipHeader->ihl*4);
+	source_port = ntohl(udpHeader->source);
+	destination_port = ntohl(udpHeader->dest);
+	printf("Destination port: %d", destination_port);
+	
+	for (i = 0; i < 2000; i++) {
+		trans_port = nat_entries[i].translated_port;
+		if (trans_port == destination_port) {
+			printf("translated_port %d\n", trans_port);
+			break;
+		}  
+	}
+	if (i == 2000) {
+		printf("Packet does not exist in NAT table.");
+		return;
+	}
+	// change source port
+	udpHeader->dest = nat_entries[i].internal_port;
+	udpHeader->check = udp_checksum((unsigned char *) packet);
+
+	if (inet_aton(nat_entries[i].internal_ip, &addr) != 1) {
+		printf("Error at ip address argument.\n");
+		invalid_args();
+	}
+	// destination IP unchanged
+	ipHeader->daddr = addr.s_addr;
+	ipHeader->check = ip_checksum((unsigned char *) packet);
+}
+
+void process_outbound_packets(nfq_data* packet) {
+	int i;
+	struct iphdr *ipHeader;
+	struct udphdr *udpHeader;
+	unsigned int ip_in_nat, source_ip, source_port, destination_port;
+	struct in_addr addr;
+
+	ipHeader = (struct iphdr *) packet;
+	source_ip = ntohl(ipHeader->saddr);
+	printf("Received Source IP: %u\n", source_ip);
+	printf("\n");
+			
+	// get port number from udp header
+	udpHeader = (struct udphdr *) (((char *) ipHeader) + ipHeader->ihl*4);
+	source_port = ntohl(udpHeader->source);
+	destination_port = ntohl(udpHeader->dest);
+	printf("Source port: %d", source_port);
+	
+	for (i = 0; i < 2000; i++) {
+		if (inet_aton(nat_entries[i].internal_ip, &addr) != 1) {
+			printf("Error at ip address argument.\n");
+			invalid_args();
+		}
+		if (ntohl(addr.s_addr) == source_ip) {
+			break;
+		}  
+	}
+	if (i == 2000) {
+		printf("Packet does not exist in NAT table.");
+		return;
+	}
+	// change source port
+	udpHeader->source = nat_entries[i].translated_port;
+	udpHeader->check = udp_checksum((unsigned char *) packet);
+
+	// destination IP unchanged
+	ipHeader->saddr = IP;
+	ipHeader->check = ip_checksum((unsigned char *) packet);
 }
 
 void *direct_packets(void *args) {
@@ -276,6 +377,6 @@ int check_inbound_or_outbound(int source_ip) {
 }
 
 void init_buffer() {
-	buf.end = 0;
+	buf.end = -1;
 	buf.packets = (nfq_data **) calloc(10, sizeof(nfq_data *));
 }
