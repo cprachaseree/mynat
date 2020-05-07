@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#include <pthread.h>
 
 
 extern "C" {
@@ -21,4 +22,9 @@ struct nat {
 	int internal_port;
 	int translated_port;
 	time_t timestamp;
+};
+
+struct buffer {
+	int end;
+	nfq_data **packets;
 };
