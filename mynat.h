@@ -11,6 +11,7 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 
+#define PORT_RANGE 2000
 
 extern "C" {
 	#include <linux/netfilter.h>     /* Defines verdicts (NF_ACCEPT, etc) */
@@ -24,7 +25,21 @@ struct nat {
 	time_t timestamp;
 };
 
+
 struct buffer {
 	int end;
 	nfq_data **packets;
 };
+
+/*
+struct buffer_entry {
+	struct nat *nat_entry;
+	int in_out_bound;
+	nfq_data *packets;
+};
+
+struct buffer {
+	int end;
+	struct buffer_entry entries[10];
+};
+*/

@@ -13,13 +13,12 @@ struct nfq_handle *nfqHandle;
 struct nfq_q_handle *myQueue;
 
 // NAT table has to be used in both threads
-struct nat *nat_entries;
+struct nat nat_entries[PORT_RANGE];
 // user space buffer used in both threads
 struct buffer buf;
 
 pthread_mutex_t nat_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t userbuffer_lock = PTHREAD_MUTEX_INITIALIZER;
-
 
 void get_args(int argc, char **argv);
 void invalid_args();
@@ -32,8 +31,10 @@ void init_buffer();
 void init_nfqueue();
 void process_inbound_packets(nfq_data* packet);
 void process_outbound_packets(nfq_data* packet);
-
-
+void init_nat_table();
+void remove_expired_nat();
+int search_from_port(int port);
+int search_from_ip(uint32_t internal_ip);
 
 /*
  * Main program
@@ -48,6 +49,9 @@ int main(int argc, char **argv) {
 	
 	// set nfqueue handler
 	init_nfqueue();
+
+	// set all internal ip in nat table to NULL
+	init_nat_table();
 
 	// create threads
 	pthread_t threads[2];
@@ -145,17 +149,19 @@ void process_inbound_packets(nfq_data* packet) {
 	destination_port = ntohl(udpHeader->dest);
 	printf("Destination port: %d", destination_port);
 	
-	for (i = 0; i < 2000; i++) {
+	i = search_from_port(destination_port);
+	/*for (i = 0; i < PORT_RANGE; i++) {
 		trans_port = nat_entries[i].translated_port;
 		if (trans_port == destination_port) {
 			printf("translated_port %d\n", trans_port);
 			break;
 		}  
 	}
-	if (i == 2000) {
+	if (i == PORT_RANGE) {
 		printf("Packet does not exist in NAT table.");
 		return;
-	}
+	}*/
+
 	// change source port
 	udpHeader->dest = nat_entries[i].internal_port;
 	udpHeader->check = udp_checksum((unsigned char *) packet);
@@ -174,7 +180,7 @@ void process_outbound_packets(nfq_data* packet) {
 	struct iphdr *ipHeader;
 	struct udphdr *udpHeader;
 	unsigned int ip_in_nat, source_ip, source_port, destination_port;
-	struct in_addr addr;
+	//struct in_addr addr;
 
 	ipHeader = (struct iphdr *) packet;
 	source_ip = ntohl(ipHeader->saddr);
@@ -187,7 +193,8 @@ void process_outbound_packets(nfq_data* packet) {
 	destination_port = ntohl(udpHeader->dest);
 	printf("Source port: %d", source_port);
 	
-	for (i = 0; i < 2000; i++) {
+	i = search_from_ip(source_ip);
+	/*for (i = 0; i < PORT_RANGE; i++) {
 		if (inet_aton(nat_entries[i].internal_ip, &addr) != 1) {
 			printf("Error at ip address argument.\n");
 			invalid_args();
@@ -196,10 +203,11 @@ void process_outbound_packets(nfq_data* packet) {
 			break;
 		}  
 	}
-	if (i == 2000) {
+	if (i == PORT_RANGE) {
 		printf("Packet does not exist in NAT table.");
 		return;
-	}
+	}*/
+
 	// change source port
 	udpHeader->source = nat_entries[i].translated_port;
 	udpHeader->check = udp_checksum((unsigned char *) packet);
@@ -209,18 +217,56 @@ void process_outbound_packets(nfq_data* packet) {
 	ipHeader->check = ip_checksum((unsigned char *) packet);
 }
 
+int search_from_port(int port) {
+	// return the index of nat_entries where translated_port is matched to port
+	// return -1 if no such entry
+	int i;
+	for (i = 0; i < PORT_RANGE; i++) {
+		if (nat_entries[i].translated_port == port) {
+			printf("translated_port %d\n", nat_entries[i].translated_port);
+			return i;
+		}  
+	}
+	if (i == PORT_RANGE) {
+		printf("Packet does not exist in NAT table.");
+		return -1;
+	}
+}
+
+int search_from_ip(uint32_t ip) {
+	// return the index of nat_entries where internal_ip is matched to ip
+	// return -1 if no such entry
+	int i;
+	struct in_addr addr;
+	for (i = 0; i < PORT_RANGE; i++) {
+		if (inet_aton(nat_entries[i].internal_ip, &addr) != 1) {
+			printf("Error at ip address argument.\n");
+			invalid_args();
+		}
+		if (ntohl(addr.s_addr) == ip) {
+			return i;
+		}  
+	}
+	if (i == PORT_RANGE) {
+		printf("Packet does not exist in NAT table.");
+		return -1;
+	}
+}
+
 void *read_packets(void *args) {
 	struct nfnl_handle *netlinkHandle;
 
 	int fd, res;
-	char buf[4096];
+	char buf[1500];
 	netlinkHandle = nfq_nfnlh(nfqHandle);
 	fd = nfnl_fd(netlinkHandle);
 
-	while ((res = recv(fd, buf, sizeof(buf), 0)) && res >= 0) {
-		nfq_handle_packet(nfqHandle, buf, res);
+	while(1) {
+		while ((res = recv(fd, buf, sizeof(buf), 0)) && res >= 0) {
+			nfq_handle_packet(nfqHandle, buf, res);
+		}
 	}
-	
+
 	pthread_exit(NULL);
 }
 
@@ -229,37 +275,10 @@ void *read_packets(void *args) {
  */
 static int Callback(nfq_q_handle* myQueue, struct nfgenmsg* msg, 
 		nfq_data* pkt, void *cbData) {
-	unsigned int id = 0;
-	nfqnl_msg_packet_hdr *header;
 
-	printf("pkt recvd: ");
-	if ((header = nfq_get_msg_packet_hdr(pkt))) {
-		id = ntohl(header->packet_id);
-		printf("  id: %u\n", id);
-		printf("  hw_protocol: %u\n", ntohs(header->hw_protocol));		
-		printf("  hook: %u\n", header->hook);
-	}
-
-	// print the timestamp (PC: seems the timestamp is not always set)
-	struct timeval tv;
-	if (!nfq_get_timestamp(pkt, &tv)) {
-		printf("  timestamp: %lu.%lu\n", tv.tv_sec, tv.tv_usec);
-	} else {
-		printf("  timestamp: nil\n");
-	}
-
-	// Print the payload; in copy meta mode, only headers will be
-	// included; in copy packet mode, whole packet will be returned.
-	printf(" payload: ");
 	unsigned char *pktData;
 	int len = nfq_get_payload(pkt, (unsigned char**)&pktData);
-	if (len > 0) {
-		for (int i=0; i<len; ++i) {
-			printf("%02x ", pktData[i]);
-		}
-	}
-	printf("\n");
-	
+
 	// get ip info from payload
 	struct iphdr *ipHeader = (struct iphdr *) pktData;
 	printf("Source IP: %u\n", ntohl(ipHeader->saddr));
@@ -273,24 +292,44 @@ static int Callback(nfq_q_handle* myQueue, struct nfgenmsg* msg,
 	printf("Source port: %u\n", udpHeader->source);
 	printf("Destination port: %u\n", udpHeader->dest);
 	printf("Checksum: %u\n", udpHeader->check);
-
-	// add a newline at the end
-	printf("\n");
-
+	
+	// set internal_ip of expired nat_entries to NULL
+	remove_expired_nat();
+	
+	int nat_index;
 	if (check_inbound_or_outbound(ntohl(ipHeader->saddr)) == 0) {
 		// outbound
 		printf("Outbound packet\n");
+		nat_index = search_from_ip(ntohl(ipHeader->saddr));
+		if (nat_index == -1) {
+		}
 	} else {
 		// inbound
 		printf("Inbound packet\n");
+		nat_index = search_from_port(udpHeader->dest);
 	}
 
-	// need to check if have token before accepting
-
-
 	// For this program we'll always accept the packet...
-	return nfq_set_verdict(myQueue, id, NF_ACCEPT, 0, NULL);
+	// return nfq_set_verdict(myQueue, id, NF_ACCEPT, 0, NULL);
 	// end Callback
+}
+
+int create_nat_entry() {
+	int i;
+	for (i = 0; i < PORT_RANGE; i++) {
+		if (nat_entries[i].internal_ip == NULL)
+			break;	
+	}
+}	
+	
+
+void remove_expired_nat() {
+	int i;
+	time_t now = time(NULL);
+	for (i = 0; i < PORT_RANGE; i++) {
+		if ((now - nat_entries[i].timestamp) > 10)
+			nat_entries[i].internal_ip = NULL;
+	}
 }
 
 void invalid_args() {
@@ -395,4 +434,10 @@ void init_nfqueue() {
 		fprintf(stderr, "Could not set packet copy mode\n");
 		exit(1);
 	}
+}
+
+void init_nat_table() {
+	int i;
+	for (i = 0; i < PORT_RANGE; i++)
+		nat_entries[i].internal_ip = NULL;
 }
