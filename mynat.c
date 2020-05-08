@@ -8,6 +8,9 @@ int MASK;
 int BUCKET_SIZE;
 int FILL_RATE;
 
+// nfq as global variable
+struct nfq_handle *nfqHandle;
+struct nfq_q_handle *myQueue;
 
 // NAT table has to be used in both threads
 struct nat *nat_entries;
@@ -21,11 +24,12 @@ pthread_mutex_t userbuffer_lock = PTHREAD_MUTEX_INITIALIZER;
 void get_args(int argc, char **argv);
 void invalid_args();
 int check_inbound_or_outbound(int source_ip);
-void *direct_packets(void *args);
+void *read_packets(void *args);
 void *process_packets(void *args);
 static int Callback(nfq_q_handle* myQueue, struct nfgenmsg* msg, 
 		nfq_data* pkt, void *cbData);
 void init_buffer();
+void init_nfqueue();
 void process_inbound_packets(nfq_data* packet);
 void process_outbound_packets(nfq_data* packet);
 
@@ -39,11 +43,15 @@ int main(int argc, char **argv) {
 	get_args(argc, argv);
 	// IP and LAN is in network byte order. BUCKET_SIZE and FILL_RATE is int
 
-	// set buffer size to 10 and end to 0
+	// set buffer size to 10 and end to -1
 	init_buffer();
+	
+	// set nfqueue handler
+	init_nfqueue();
+
 	// create threads
 	pthread_t threads[2];
-	if ((pthread_create(&threads[0], NULL, direct_packets, NULL) != 0) ||
+	if ((pthread_create(&threads[0], NULL, read_packets, NULL) != 0) ||
 		(pthread_create(&threads[1], NULL, process_packets, NULL))) {
 		printf("Error creating thread.");
 	}
@@ -51,6 +59,10 @@ int main(int argc, char **argv) {
 		(pthread_join(threads[1], NULL)) != 0) {
 		printf("Error joining thread.");
 	}
+
+	nfq_destroy_queue(myQueue);
+	nfq_close(nfqHandle);
+	
 	return 0;
 }
 
@@ -59,6 +71,9 @@ void *process_packets(void *args) {
 	nfq_data *packet;
 	struct iphdr *ipHeader;
 	struct udphdr *udpHeader;
+	unsigned int id;
+	nfqnl_msg_packet_hdr *header;
+
 	while (1) {
 		pthread_mutex_lock(&userbuffer_lock);
 		if (buf.end == -1) {
@@ -67,6 +82,12 @@ void *process_packets(void *args) {
 		}
 		packet = buf.packets[0];
 		pthread_mutex_unlock(&userbuffer_lock);
+		if ((header = nfq_get_msg_packet_hdr(packet))) {
+			id = ntohl(header->packet_id);
+			printf("  id: %u\n", id);
+			printf("  hw_protocol: %u\n", ntohs(header->hw_protocol));		
+			printf("  hook: %u\n", header->hook);
+		}
 		// get ip info of packet
 		ipHeader = (struct iphdr *) packet;
 		printf("Received Source IP: %u\n", ntohl(ipHeader->saddr));
@@ -97,6 +118,10 @@ void *process_packets(void *args) {
 		buf.packets[buf.end] = NULL;
 		buf.end--;
 		pthread_mutex_unlock(&userbuffer_lock);
+		// blocking wait for token
+
+		// set verdict
+		nfq_set_verdict(myQueue, id, NF_ACCEPT, 0, NULL);
 	}
 	pthread_exit(NULL);
 }
@@ -184,57 +209,18 @@ void process_outbound_packets(nfq_data* packet) {
 	ipHeader->check = ip_checksum((unsigned char *) packet);
 }
 
-void *direct_packets(void *args) {
-	struct nfq_handle *nfqHandle;
-
-	struct nfq_q_handle *myQueue;
+void *read_packets(void *args) {
 	struct nfnl_handle *netlinkHandle;
 
 	int fd, res;
 	char buf[4096];
-
-	// Get a queue connection handle from the module
-	if (!(nfqHandle = nfq_open())) {
-		fprintf(stderr, "Error in nfq_open()\n");
-		exit(-1);
-	}
-
-	// Unbind the handler from processing any IP packets 
-	// (seems to be a must)
-	if (nfq_unbind_pf(nfqHandle, AF_INET) < 0) {
-		fprintf(stderr, "Error in nfq_unbind_pf()\n");
-		exit(1);
-	}
-
-	// Bind this handler to process IP packets...
-	if (nfq_bind_pf(nfqHandle, AF_INET) < 0) {
-		fprintf(stderr, "Error in nfq_bind_pf()\n");
-		exit(1);
-	}
-
-
-	// Install a callback on queue 0
-	if (!(myQueue = nfq_create_queue(nfqHandle,  0, &Callback, NULL))) {
-		fprintf(stderr, "Error in nfq_create_queue()\n");
-		exit(1);
-	}
-
-	// Turn on packet copy mode
-	if (nfq_set_mode(myQueue, NFQNL_COPY_PACKET, 0xffff) < 0) {
-		fprintf(stderr, "Could not set packet copy mode\n");
-		exit(1);
-	}
-
 	netlinkHandle = nfq_nfnlh(nfqHandle);
 	fd = nfnl_fd(netlinkHandle);
 
 	while ((res = recv(fd, buf, sizeof(buf), 0)) && res >= 0) {
 		nfq_handle_packet(nfqHandle, buf, res);
 	}
-
-	nfq_destroy_queue(myQueue);
-
-	nfq_close(nfqHandle);
+	
 	pthread_exit(NULL);
 }
 
@@ -307,7 +293,6 @@ static int Callback(nfq_q_handle* myQueue, struct nfgenmsg* msg,
 	// end Callback
 }
 
-
 void invalid_args() {
 	printf("Invalid arguments.\n");
 	printf("Usage: sudo ./nat <IP> <LAN> <MASK> <BUCKET_SIZE> <FILL_RATE>\n");
@@ -379,4 +364,35 @@ int check_inbound_or_outbound(int source_ip) {
 void init_buffer() {
 	buf.end = -1;
 	buf.packets = (nfq_data **) calloc(10, sizeof(nfq_data *));
+}
+
+void init_nfqueue() {
+	if (!(nfqHandle = nfq_open())) {
+		fprintf(stderr, "Error in nfq_open()\n");
+		exit(-1);
+	}
+
+	// Unbind the handler from processing any IP packets 
+	// (seems to be a must)
+	if (nfq_unbind_pf(nfqHandle, AF_INET) < 0) {
+		fprintf(stderr, "Error in nfq_unbind_pf()\n");
+		exit(1);
+	}
+
+	// Bind this handler to process IP packets...
+	if (nfq_bind_pf(nfqHandle, AF_INET) < 0) {
+		fprintf(stderr, "Error in nfq_bind_pf()\n");
+		exit(1);
+	}
+	// Install a callback on queue 0
+	if (!(myQueue = nfq_create_queue(nfqHandle,  0, &Callback, NULL))) {
+		fprintf(stderr, "Error in nfq_create_queue()\n");
+		exit(1);
+	}
+
+	// Turn on packet copy mode
+	if (nfq_set_mode(myQueue, NFQNL_COPY_PACKET, 0xffff) < 0) {
+		fprintf(stderr, "Could not set packet copy mode\n");
+		exit(1);
+	}
 }
