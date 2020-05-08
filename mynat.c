@@ -32,8 +32,8 @@ static int Callback(nfq_q_handle* myQueue, struct nfgenmsg* msg,
 		nfq_data* pkt, void *cbData);
 void init_buffer();
 void init_nfqueue();
-void process_inbound_packets(nfq_data* packet, struct nat *nat_entry);
-void process_outbound_packets(nfq_data* packet, struct nat *nat_entry);
+void process_inbound_packets(unsigned char *packet, struct nat *nat_entry);
+void process_outbound_packets(unsigned char *packet, struct nat *nat_entry);
 
 // void process_inbound_packets(nfq_data* packet);
 // void process_outbound_packets(nfq_data* packet);
@@ -122,9 +122,9 @@ void *process_packets(void *args) {
 		
 		// is_outbound = check_inbound_or_outbound(ntohl(ipHeader->saddr));
 		if (buf_ent.is_outbound == 0) {
-			process_inbound_packets((struct nfq_data*) buf_ent.packet, buf_ent.nat_entry);
+			process_inbound_packets(buf_ent.packet, buf_ent.nat_entry);
 		} else if (buf_ent.is_outbound == 1) {
-			process_outbound_packets((struct nfq_data*) buf_ent.packet, buf_ent.nat_entry);
+			process_outbound_packets(buf_ent.packet, buf_ent.nat_entry);
 		}
 
 		// send out packet by waiting for tokens
@@ -145,7 +145,7 @@ void *process_packets(void *args) {
 	pthread_exit(NULL);
 }
 
-void process_inbound_packets(nfq_data* packet, struct nat *nat_entry) {
+void process_inbound_packets(unsigned char *packet, struct nat *nat_entry) {
 	int i;
 	struct iphdr *ipHeader;
 	struct udphdr *udpHeader;
@@ -166,14 +166,14 @@ void process_inbound_packets(nfq_data* packet, struct nat *nat_entry) {
 	
 	// change dest port
 	udpHeader->dest = htons(nat_entry->internal_port);
-	udpHeader->check = udp_checksum((unsigned char *) packet);
+	udpHeader->check = udp_checksum(packet);
 
 	// destination IP unchanged
 	ipHeader->daddr = htonl(nat_entry->internal_ip);
-	ipHeader->check = ip_checksum((unsigned char *) packet);
+	ipHeader->check = ip_checksum(packet);
 }
 
-void process_outbound_packets(nfq_data* packet, struct nat *nat_entry) {
+void process_outbound_packets(unsigned char *packet, struct nat *nat_entry) {
 	int i;
 	struct iphdr *ipHeader;
 	struct udphdr *udpHeader;
@@ -187,8 +187,8 @@ void process_outbound_packets(nfq_data* packet, struct nat *nat_entry) {
 			
 	// get port number from udp header
 	udpHeader = (struct udphdr *) (((char *) ipHeader) + ipHeader->ihl*4);
-	source_port = ntohl(udpHeader->source);
-	destination_port = ntohl(udpHeader->dest);
+	source_port = ntohs(udpHeader->source);
+	destination_port = ntohs(udpHeader->dest);
 	printf("Source port: %d", source_port);
 	
 	
@@ -198,11 +198,11 @@ void process_outbound_packets(nfq_data* packet, struct nat *nat_entry) {
 		return;
 	}
 	udpHeader->source = nat_entry->translated_port;
-	udpHeader->check = udp_checksum((unsigned char *) packet);
+	udpHeader->check = udp_checksum(packet);
 
 	// destination IP unchanged
-	ipHeader->saddr = IP;
-	ipHeader->check = ip_checksum((unsigned char *) packet);
+	ipHeader->saddr = htonl(IP);
+	ipHeader->check = ip_checksum(packet);
 }
 
 int search_from_port(uint16_t port) {
