@@ -42,6 +42,7 @@ struct nat {
 struct buffer_entry {
 	struct nat *nat_entry;
 	int is_outbound;
+	unsigned int id;
 	unsigned char *packet;
 };
 

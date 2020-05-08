@@ -315,6 +315,7 @@ static int Callback(nfq_q_handle* myQueue, struct nfgenmsg* msg,
 	pthread_mutex_lock(&userbuffer_lock);
 	buf.end++;
 	buf_ent = &buf.entries[buf.end];
+	buf_ent->id = id;
 	buf_ent->nat_entry = nat_entry;
 	buf_ent->is_outbound = is_outbound;
 	buf_ent->packet = pktData;
