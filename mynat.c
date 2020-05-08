@@ -98,11 +98,13 @@ void *process_packets(void *args) {
 		}
 		buf_ent = buf.entries[0];
 		pthread_mutex_unlock(&userbuffer_lock);
-		if ((header = nfq_get_msg_packet_hdr((struct nfq_data*) buf_ent.packet))) {
+
+		if ((header = nfq_get_msg_packet_hdr((nfq_data*) buf_ent.packet))) {
 			id = ntohl(header->packet_id);
 			printf("  id: %u\n", id);
 			printf("  hw_protocol: %u\n", ntohs(header->hw_protocol));		
 			printf("  hook: %u\n", header->hook);
+			fflush(stdout);
 		}
 		// get ip info of packet
 		ipHeader = (struct iphdr *) buf_ent.packet;
@@ -110,6 +112,7 @@ void *process_packets(void *args) {
 		printf("Received Destination IP: %u\n", ntohl(ipHeader->daddr));
 		printf("Received IP Checksum: %d\n", ntohl(ipHeader->check));
 		printf("\n");
+		fflush(stdout);
 			
 		// get port number from udp header
 		udpHeader = (struct udphdr *) (((char *) ipHeader) + ipHeader->ihl*4);
@@ -292,7 +295,7 @@ static int Callback(nfq_q_handle* myQueue, struct nfgenmsg* msg,
 		nat_index = search_from_ip(ntohl(ipHeader->saddr));
 		if (nat_index == -1) {
 			nat_entry = create_nat_entry(ntohl(ipHeader->saddr), ntohs(udpHeader->source));
-			printf("Created new entry at port %u", nat_entry->translated_port);
+			printf("Created new entry at port %u\n", nat_entry->translated_port);
 		}
 		else {
 			nat_entry = &nat_entries[nat_index];
@@ -311,7 +314,7 @@ static int Callback(nfq_q_handle* myQueue, struct nfgenmsg* msg,
 			printf("Entry at port %u found\n", nat_entry->translated_port);
 		}
 	}
-	// insert to buffer		
+	// insert to buffer	
 	pthread_mutex_lock(&userbuffer_lock);
 	buf.end++;
 	buf_ent = &buf.entries[buf.end];
