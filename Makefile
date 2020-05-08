@@ -5,3 +5,4 @@ nat: mynat.c checksum.c
 	${CC} mynat.c checksum.c -o nat ${LIB}
 clean:
 	rm nat 
+	rm *.o
