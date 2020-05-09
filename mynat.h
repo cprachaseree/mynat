@@ -10,6 +10,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <unistd.h>
 
 #define PORT_RANGE 2000
 #define BUF_LEN 10
@@ -50,3 +51,4 @@ struct buffer {
 	int end;
 	struct buffer_entry entries[BUF_LEN];
 };
+
