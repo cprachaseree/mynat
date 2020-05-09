@@ -33,13 +33,13 @@ static int Callback(nfq_q_handle* myQueue, struct nfgenmsg* msg,
 		nfq_data* pkt, void *cbData);
 void init_buffer();
 void init_nfqueue();
-void process_inbound_packets(unsigned char *packet, struct nat *nat_entry);
-void process_outbound_packets(unsigned char *packet, struct nat *nat_entry);
+void process_inbound_packets(unsigned char *packet);
+void process_outbound_packets(unsigned char *packet);
 void init_nat_table();
 void remove_expired_nat();
-int inbound_nat_search(uint16_t port);
-int outbound_nat_search(uint32_t ip, uint16_t port);
-struct nat * create_nat_entry(uint32_t internal_ip, int internal_port);
+struct nat* inbound_nat_search(uint16_t port);
+struct nat* outbound_nat_search(uint32_t ip, uint16_t port);
+struct nat* create_nat_entry(uint32_t internal_ip, int internal_port);
 void print_nat_table();
 
 /*
@@ -112,9 +112,9 @@ void *process_packets(void *args) {
 		
 		// is_outbound = check_inbound_or_outbound(ntohl(ipHeader->saddr));
 		if (buf_ent.is_outbound == 0) {
-			process_inbound_packets(buf_ent.packet, buf_ent.nat_entry);
+			process_inbound_packets(buf_ent.packet);
 		} else if (buf_ent.is_outbound == 1) {
-			process_outbound_packets(buf_ent.packet, buf_ent.nat_entry);
+			process_outbound_packets(buf_ent.packet);
 		}
 
 		// send out packet by waiting for tokens
