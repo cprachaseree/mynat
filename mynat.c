@@ -213,7 +213,7 @@ void process_outbound_packets(unsigned char *packet) {
 	printf("Source port: %d\n", source_port);
 
 	nat_entry = outbound_nat_search(source_ip, source_port);
-	if (nat_index == NULL) {
+	if (nat_entry == NULL) {
 		nat_entry = create_nat_entry(source_ip, source_port);
 		printf("Created new entry at port %u\n", nat_entry->translated_port);
 	}
