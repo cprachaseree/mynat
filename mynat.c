@@ -124,9 +124,9 @@ void *process_packets(void *args) {
 		for (int j = 0; j <= buf.end; j++) {
 			e = buf.entries[j];
 			printf("buffer entry id:\n%d\n", e.id);
-			printf("NAT entries:\n");
-			printf("Internal ip: %d, Internal port: %d, Translated port: %d\n", 
-				e.nat_entry->internal_ip, e.nat_entry->internal_port,  e.nat_entry->translated_port);
+			// printf("NAT entries:\n");
+			// printf("Internal ip: %d, Internal port: %d, Translated port: %d\n", 
+			// 	e.nat_entry->internal_ip, e.nat_entry->internal_port,  e.nat_entry->translated_port);
 		}
 
 		// move up the queue
@@ -143,9 +143,9 @@ void *process_packets(void *args) {
 		for (int j = 0; j <= buf.end; j++) {
 			e = buf.entries[j];
 			printf("buffer entry id:\n%d\n", e.id);
-			printf("NAT entries:\n");
-			printf("Internal ip: %d, Internal port: %d, Translated port: %d\n", 
-				e.nat_entry->internal_ip, e.nat_entry->internal_port,  e.nat_entry->translated_port);
+			// printf("NAT entries:\n");
+			// printf("Internal ip: %d, Internal port: %d, Translated port: %d\n", 
+			// 	e.nat_entry->internal_ip, e.nat_entry->internal_port,  e.nat_entry->translated_port);
 		}
 		pthread_mutex_lock(&tokens_lock);
 		// wait for available token
@@ -163,13 +163,13 @@ void *process_packets(void *args) {
 	pthread_exit(NULL);
 }
 
-void process_inbound_packets(unsigned char *packet, struct nat *nat_entry) {
-	int i;
+void process_inbound_packets(unsigned char *packet) {
 	struct iphdr *ipHeader;
 	struct udphdr *udpHeader;
 	unsigned int ip_in_nat, destination_ip, source_port, destination_port, 
 		trans_port;
 	struct in_addr addr;
+	struct nat *nat_entry;
 
 	ipHeader = (struct iphdr *) packet;
 	destination_ip = ntohl(ipHeader->daddr);
@@ -181,6 +181,10 @@ void process_inbound_packets(unsigned char *packet, struct nat *nat_entry) {
 	source_port = ntohs(udpHeader->source);
 	destination_port = ntohs(udpHeader->dest);
 	printf("Destination port: %d\n", destination_port);
+
+	nat_entry = inbound_nat_search(destination_port);
+	nat_entry->timestamp = time(NULL);
+	printf("Entry at port %u found\n", nat_entry->translated_port);
 	
 	// change dest port
 	udpHeader->dest = htons(nat_entry->internal_port);
@@ -191,11 +195,11 @@ void process_inbound_packets(unsigned char *packet, struct nat *nat_entry) {
 	ipHeader->check = ip_checksum(packet);
 }
 
-void process_outbound_packets(unsigned char *packet, struct nat *nat_entry) {
+void process_outbound_packets(unsigned char *packet) {
 	struct iphdr *ipHeader;
 	struct udphdr *udpHeader;
 	unsigned int ip_in_nat, source_ip, source_port, destination_port;
-	//struct in_addr addr;
+	struct nat *nat_entry;
 
 	ipHeader = (struct iphdr *) packet;
 	source_ip = ntohl(ipHeader->saddr);
@@ -207,7 +211,17 @@ void process_outbound_packets(unsigned char *packet, struct nat *nat_entry) {
 	source_port = ntohs(udpHeader->source);
 	destination_port = ntohs(udpHeader->dest);
 	printf("Source port: %d\n", source_port);
-	
+
+	nat_entry = outbound_nat_search(source_ip, source_port);
+	if (nat_index == NULL) {
+		nat_entry = create_nat_entry(source_ip, source_port);
+		printf("Created new entry at port %u\n", nat_entry->translated_port);
+	}
+	else {
+		nat_entry->timestamp = time(NULL);
+		printf("Entry at port %u found\n", nat_entry->translated_port);
+	}
+
 	udpHeader->source = nat_entry->translated_port;
 	udpHeader->check = udp_checksum(packet);
 
@@ -216,34 +230,33 @@ void process_outbound_packets(unsigned char *packet, struct nat *nat_entry) {
 	ipHeader->check = ip_checksum(packet);
 }
 
-int inbound_nat_search(uint16_t port) {
-	// return the index of nat_entries where translated_port is matched to port
-	// return -1 if no such entry
+struct nat* inbound_nat_search(uint16_t port) {
+	// return the pointer to nat_entries where translated_port is matched to port
+	// return NULL if no such entry
 	int i;
 	for (i = 0; i < PORT_RANGE; i++) {
 		if (nat_entries[i].translated_port == port) {
 			printf("translated_port %d\n", nat_entries[i].translated_port);
-			return i;
+			return &nat_entries[i];
 		}  
 	}
 	if (i == PORT_RANGE) {
-		printf("Packet does not exist in NAT table.\n");
-		return -1;
+		return NULL;
 	}
 }
 
-int outbound_nat_search(uint32_t ip, uint16_t port) {
-	// return the index of nat_entries where internal_ip is matched to ip
+struct nat* outbound_nat_search(uint32_t ip, uint16_t port) {
+	// return the pointer to the nat_entries where internal_ip is matched to ip 
+	// and internal_port is matched to port
 	// return -1 if no such entry
 	int i;
 	for (i = 0; i < PORT_RANGE; i++) {
 		if (nat_entries[i].internal_ip == ip &&
 			nat_entries[i].internal_port == port)
-			return i;
+			return &nat_entries[i];
 	}
 	if (i == PORT_RANGE) {
-		printf("Packet does not exist in NAT table.\n");
-		return -1;
+		return NULL;
 	}
 }
 
@@ -277,19 +290,10 @@ static int Callback(nfq_q_handle* myQueue, struct nfgenmsg* msg,
 
 	// get ip info from payload
 	struct iphdr *ipHeader = (struct iphdr *) pktData;
-	/*
-	printf("Source IP: %u\n", ntohl(ipHeader->saddr));
-	printf("Destination IP: %u\n", ntohl(ipHeader->daddr));
-	printf("Checksum: %u\n", ntohs(ipHeader->check));
-	*/
+
 
 	// get port number from udp header
 	struct udphdr *udpHeader = (struct udphdr *) (((char *) ipHeader) + ipHeader->ihl*4);
-	/*
-	printf("Source port: %u\n", ntohs(udpHeader->source));
-	printf("Destination port: %u\n", ntohs(udpHeader->dest));
-	printf("Checksum: %u\n", ntohs(udpHeader->check));
-	*/
 	
 	// set internal_ip of expired nat_entries to NULL
 	remove_expired_nat();
@@ -297,43 +301,21 @@ static int Callback(nfq_q_handle* myQueue, struct nfgenmsg* msg,
 	if (buf.end == BUF_LEN - 1)
 		return nfq_set_verdict(myQueue, id, NF_DROP, 0, NULL);
 
-	int nat_index;
 	int is_outbound = check_inbound_or_outbound(ntohl(ipHeader->saddr));
-	struct nat *nat_entry;
 	struct buffer_entry *buf_ent;
-	if (is_outbound == 0) {
-		// outbound
-		printf("Outbound packet\n");
-		nat_index = outbound_nat_search(ntohl(ipHeader->saddr), ntohs(udpHeader->source));
-		if (nat_index == -1) {
-			nat_entry = create_nat_entry(ntohl(ipHeader->saddr), ntohs(udpHeader->source));
-			printf("Created new entry at port %u\n", nat_entry->translated_port);
-		}
-		else {
-			nat_entry = &nat_entries[nat_index];
-			nat_entry->timestamp = time(NULL);
-			printf("Entry at port %u found\n", nat_entry->translated_port);
-		}
-	} else {
-		// inbound
-		printf("Inbound packet\n");
-		nat_index = inbound_nat_search(ntohs(udpHeader->dest));
-		if (nat_index == -1) {
-			printf("Drop Inbound with no entry\n"); 
-			return nfq_set_verdict(myQueue, id, NF_DROP, 0, NULL);
-		}
-		else {
-			nat_entry = &nat_entries[nat_index];
-			nat_entry->timestamp = time(NULL);
-			printf("Entry at port %u found\n", nat_entry->translated_port);
-		}
+	struct nat *nat_entry;
+
+	nat_entry = inbound_nat_search(ntohs(udpHeader->dest));
+	if (nat_entry == NULL) {
+		printf("Drop Inbound with no entry\n"); 
+		return nfq_set_verdict(myQueue, id, NF_DROP, 0, NULL);
 	}
+	
 	// insert to buffer	
 	pthread_mutex_lock(&userbuffer_lock);
 	buf.end++;
 	buf_ent = &buf.entries[buf.end];
 	buf_ent->id = id;
-	buf_ent->nat_entry = nat_entry;
 	buf_ent->is_outbound = is_outbound;
 	buf_ent->packet = pktData;
 	pthread_mutex_unlock(&userbuffer_lock);
