@@ -234,13 +234,16 @@ struct nat* inbound_nat_search(uint16_t port) {
 	// return the pointer to nat_entries where translated_port is matched to port
 	// return NULL if no such entry
 	int i;
+	pthread_mutex_lock(&nat_lock);
 	for (i = 0; i < PORT_RANGE; i++) {
 		if (nat_entries[i].translated_port == port) {
 			printf("translated_port %d\n", nat_entries[i].translated_port);
+			pthread_mutex_unlock(&nat_lock);
 			return &nat_entries[i];
 		}  
 	}
 	if (i == PORT_RANGE) {
+		pthread_mutex_unlock(&nat_lock);
 		return NULL;
 	}
 }
@@ -250,12 +253,15 @@ struct nat* outbound_nat_search(uint32_t ip, uint16_t port) {
 	// and internal_port is matched to port
 	// return -1 if no such entry
 	int i;
+	pthread_mutex_lock(&nat_lock);
 	for (i = 0; i < PORT_RANGE; i++) {
 		if (nat_entries[i].internal_ip == ip &&
 			nat_entries[i].internal_port == port)
+			pthread_mutex_unlock(&nat_lock);
 			return &nat_entries[i];
 	}
 	if (i == PORT_RANGE) {
+		pthread_mutex_unlock(&nat_lock);
 		return NULL;
 	}
 }
@@ -323,6 +329,7 @@ static int Callback(nfq_q_handle* myQueue, struct nfgenmsg* msg,
 }
 
 void print_nat_table() {
+	// nat_lock should be obtained from caller
 	int i;
 	struct in_addr addr_in, addr_tran;
 	struct nat *entry;
@@ -342,6 +349,7 @@ void print_nat_table() {
 
 struct nat* create_nat_entry(uint32_t internal_ip, int internal_port) {
 	int i;
+	pthread_mutex_lock(&nat_lock);
 	for (i = 0; i < PORT_RANGE; i++) {
 		if (nat_entries[i].internal_ip == 0)
 			break;	
@@ -352,20 +360,29 @@ struct nat* create_nat_entry(uint32_t internal_ip, int internal_port) {
 	entry->translated_port = i + 10000;
 	entry->timestamp = time(NULL);
 	print_nat_table();
+	pthread_mutex_unlock(&nat_lock);
 	return entry;
 }	
 	
 
 void remove_expired_nat() {
 	int i;
+	int modified = 0;
 	time_t now = time(NULL);
+	pthread_mutex_lock(&nat_lock);
 	for (i = 0; i < PORT_RANGE; i++) {
 		if (nat_entries[i].internal_ip != 0 &&
 			(now - nat_entries[i].timestamp) > 10) {
 			nat_entries[i].internal_ip = 0;
-			print_nat_table();
+			if (modified == 0) {
+				modified = 1;
+			}
 		}
 	}
+	if (modified == 1) {
+		print_nat_table();
+	}
+	pthread_mutex_unlock(&nat_lock);
 }
 
 void invalid_args() {
