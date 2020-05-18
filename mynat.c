@@ -8,6 +8,8 @@ int MASK;
 int BUCKET_SIZE;
 int FILL_RATE;
 
+int tokens;
+
 // nfq as global variable
 struct nfq_handle *nfqHandle;
 struct nfq_q_handle *myQueue;
@@ -19,12 +21,14 @@ struct buffer buf;
 
 pthread_mutex_t nat_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t userbuffer_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t tokens_lock = PTHREAD_MUTEX_INITIALIZER;
 
 void get_args(int argc, char **argv);
 void invalid_args();
 int check_inbound_or_outbound(uint32_t source_ip);
 void *read_packets(void *args);
 void *process_packets(void *args);
+void *release_tokens(void *args);
 static int Callback(nfq_q_handle* myQueue, struct nfgenmsg* msg, 
 		nfq_data* pkt, void *cbData);
 void init_buffer();
@@ -57,16 +61,15 @@ int main(int argc, char **argv) {
 	init_nat_table();
 
 	// create threads
-	pthread_t threads[2];
-	pthread_create(&threads[0], NULL, read_packets, NULL);
-	pthread_join(threads[0], NULL);
-	return 0;
-	if ((pthread_create(&threads[0], NULL, read_packets, NULL) != 0) ||
-		(pthread_create(&threads[1], NULL, process_packets, NULL))) {
+	pthread_t threads[2], token_thread;
+	if (pthread_create(&threads[0], NULL, read_packets, NULL) != 0 ||
+		pthread_create(&threads[1], NULL, process_packets, NULL) != 0 ||
+		pthread_create(&token_thread, NULL, release_tokens, NULL) != 0) {
 		printf("Error creating thread.");
 	}
-	if ((pthread_join(threads[0], NULL) != 0) ||
-		(pthread_join(threads[1], NULL)) != 0) {
+	if (pthread_join(threads[0], NULL) != 0 ||
+		pthread_join(threads[1], NULL) != 0 ||
+	    pthread_join(token_thread, NULL) != 0) {
 		printf("Error joining thread.");
 	}
 
@@ -92,16 +95,8 @@ void *process_packets(void *args) {
 		}
 		buf_ent = buf.entries[0];
 		pthread_mutex_unlock(&userbuffer_lock);
-		/*
-		if ((header = nfq_get_msg_packet_hdr((struct nfq_data*) buf_ent->packet))) {
-			id = ntohl(header->packet_id);
-			printf("  id: %u\n", id);
-			printf("  hw_protocol: %u\n", ntohs(header->hw_protocol));		
-			printf("  hook: %u\n", header->hook);
-			fflush(stdout);
-		}
-		*/
-		// get ip info of packet
+
+		id = buf_ent.id;
 		ipHeader = (struct iphdr *) buf_ent.packet;
 		printf("Received Source IP: %u\n", ntohl(ipHeader->saddr));
 		printf("Received Destination IP: %u\n", ntohl(ipHeader->daddr));
@@ -124,6 +119,16 @@ void *process_packets(void *args) {
 
 		// send out packet by waiting for tokens
 
+		struct buffer_entry e;
+		printf("Before shifting the buffer\n");
+		for (int j = 0; j <= buf.end; j++) {
+			e = buf.entries[j];
+			printf("buffer entry id:\n%d\n", e.id);
+			printf("NAT entries:\n");
+			printf("Internal ip: %d, Internal port: %d, Translated port: %d\n", 
+				e.nat_entry->internal_ip, e.nat_entry->internal_port,  e.nat_entry->translated_port);
+		}
+
 		// move up the queue
 		printf("%d\n", buf.end);
 		pthread_mutex_lock(&userbuffer_lock);
@@ -134,10 +139,26 @@ void *process_packets(void *args) {
 		buf.end--;
 		pthread_mutex_unlock(&userbuffer_lock);
 		printf("%d\n", buf.end);
-		// blocking wait for token
+		printf("After shifting the buffer\n");
+		for (int j = 0; j <= buf.end; j++) {
+			e = buf.entries[j];
+			printf("buffer entry id:\n%d\n", e.id);
+			printf("NAT entries:\n");
+			printf("Internal ip: %d, Internal port: %d, Translated port: %d\n", 
+				e.nat_entry->internal_ip, e.nat_entry->internal_port,  e.nat_entry->translated_port);
+		}
+		pthread_mutex_lock(&tokens_lock);
+		// wait for available token
+		while (tokens == 0) {
+			pthread_mutex_unlock(&tokens_lock);
+		}
+		// consume token
+		tokens--;
+		pthread_mutex_unlock(&tokens_lock);
 
 		// set verdict
-		//nfq_set_verdict(myQueue, id, NF_ACCEPT, 0, NULL);
+		nfq_set_verdict(myQueue, id, NF_ACCEPT, 0, NULL);
+
 	}
 	pthread_exit(NULL);
 }
@@ -473,4 +494,20 @@ void init_nat_table() {
 	int i;
 	for (i = 0; i < PORT_RANGE; i++)
 		nat_entries[i].internal_ip = 0;
+}
+
+void *release_tokens(void *args) {
+	tokens = BUCKET_SIZE;
+
+	while(1) {
+		pthread_mutex_lock(&tokens_lock);
+		if (tokens + FILL_RATE > BUCKET_SIZE) {
+			tokens = BUCKET_SIZE;
+		} else {
+			tokens += FILL_RATE;
+		}
+		pthread_mutex_unlock(&tokens_lock);
+		sleep(1);
+	}
+	pthread_exit(NULL);
 }
