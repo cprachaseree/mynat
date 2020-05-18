@@ -28,7 +28,7 @@ struct nat {
 };
 
 struct buffer_entry {
-	int is_outbound;
+	int is_inbound;
 	unsigned int id;
 	unsigned char *packet;
 };

@@ -110,11 +110,10 @@ void *process_packets(void *args) {
 		printf("Received Destination port: %u\n", udpHeader->dest);
 		printf("Received UDP Checksum: %u\n", udpHeader->check);
 		
-		// is_outbound = check_inbound_or_outbound(ntohl(ipHeader->saddr));
-		if (buf_ent.is_outbound == 0) {
-			process_inbound_packets(buf_ent.packet);
-		} else if (buf_ent.is_outbound == 1) {
+		if (buf_ent.is_inbound == 0) {
 			process_outbound_packets(buf_ent.packet);
+		} else if (buf_ent.is_inbound == 1) {
+			process_inbound_packets(buf_ent.packet);
 		}
 
 		// send out packet by waiting for tokens
@@ -248,7 +247,7 @@ struct nat* inbound_nat_search(uint16_t port) {
 struct nat* outbound_nat_search(uint32_t ip, uint16_t port) {
 	// return the pointer to the nat_entries where internal_ip is matched to ip 
 	// and internal_port is matched to port
-	// return -1 if no such entry
+	// return NULL if no such entry
 	int i;
 	for (i = 0; i < PORT_RANGE; i++) {
 		if (nat_entries[i].internal_ip == ip &&
@@ -301,14 +300,16 @@ static int Callback(nfq_q_handle* myQueue, struct nfgenmsg* msg,
 	if (buf.end == BUF_LEN - 1)
 		return nfq_set_verdict(myQueue, id, NF_DROP, 0, NULL);
 
-	int is_outbound = check_inbound_or_outbound(ntohl(ipHeader->saddr));
+	int is_inbound = check_inbound_or_outbound(ntohl(ipHeader->saddr));
 	struct buffer_entry *buf_ent;
 	struct nat *nat_entry;
 
-	nat_entry = inbound_nat_search(ntohs(udpHeader->dest));
-	if (nat_entry == NULL) {
-		printf("Drop Inbound with no entry\n"); 
-		return nfq_set_verdict(myQueue, id, NF_DROP, 0, NULL);
+	if (is_inbound == 1) {
+		nat_entry = inbound_nat_search(ntohs(udpHeader->dest));
+		if (nat_entry == NULL) {
+			printf("Drop Inbound with no entry\n"); 
+			return nfq_set_verdict(myQueue, id, NF_DROP, 0, NULL);
+		}
 	}
 	
 	// insert to buffer	
@@ -316,7 +317,7 @@ static int Callback(nfq_q_handle* myQueue, struct nfgenmsg* msg,
 	buf.end++;
 	buf_ent = &buf.entries[buf.end];
 	buf_ent->id = id;
-	buf_ent->is_outbound = is_outbound;
+	buf_ent->is_inbound = is_inbound;
 	buf_ent->packet = pktData;
 	pthread_mutex_unlock(&userbuffer_lock);
 	return 0;
