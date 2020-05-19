@@ -30,6 +30,7 @@ struct nat {
 struct buffer_entry {
 	int is_inbound;
 	unsigned int id;
+	uint32_t length;
 	unsigned char *packet;
 };
 

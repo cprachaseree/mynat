@@ -23,6 +23,8 @@ pthread_mutex_t nat_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t userbuffer_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t tokens_lock = PTHREAD_MUTEX_INITIALIZER;
 
+pthread_cond_t available_token = PTHREAD_COND_INITIALIZER;
+
 void get_args(int argc, char **argv);
 void invalid_args();
 int check_inbound_or_outbound(uint32_t source_ip);
@@ -33,8 +35,8 @@ static int Callback(nfq_q_handle* myQueue, struct nfgenmsg* msg,
 		nfq_data* pkt, void *cbData);
 void init_buffer();
 void init_nfqueue();
-void process_inbound_packets(unsigned char *packet);
-void process_outbound_packets(unsigned char *packet);
+void process_inbound_packets(unsigned char **pkt);
+void process_outbound_packets(unsigned char **pkt);
 void init_nat_table();
 void remove_expired_nat();
 struct nat* inbound_nat_search(uint16_t port);
@@ -100,26 +102,28 @@ void *process_packets(void *args) {
 		
 		id = buf_ent.id;
 		printf("process id %d\n", id);
-
-		/*
-		ipHeader = (struct iphdr *) buf_ent.packet;
-		udpHeader = (struct udphdr *) (((char *) ipHeader) + ipHeader->ihl*4);
-		saddr.s_addr = ipHeader->saddr;
-		daddr.s_addr = ipHeader->daddr;
-		strcpy(cs, inet_ntoa(saddr));
-		strcpy(cd, inet_ntoa(daddr));
-
-		printf("before:\n");
-		printf("source ip: %s\n", cs);
-		printf("dest ip: %s\n", cd);
-		printf("source port: %u\n", ntohs(udpHeader->source));
-		printf("dest port: %u\n", ntohs(udpHeader->dest));
-		*/
-
+		pthread_mutex_lock(&userbuffer_lock);
+		printf("Before translation\n");
+		for (int j = 0; j <= buf.end; j++)
+		{
+			printf("========== packet id: %d ==========\n", buf.entries[j].id);
+			ipHeader = (struct iphdr *)buf.entries[j].packet;
+			ipHeader = (struct iphdr *)buf.entries[j].packet;
+			udpHeader = (struct udphdr *)(((char *)ipHeader) + ipHeader->ihl * 4);
+			saddr.s_addr = ipHeader->saddr;
+			daddr.s_addr = ipHeader->daddr;
+			strcpy(cs, inet_ntoa(saddr));
+			strcpy(cd, inet_ntoa(daddr));
+			printf("source ip: %s\n", cs);
+			printf("dest ip: %s\n", cd);
+			printf("source port: %u\n", ntohs(udpHeader->source));
+			printf("dest port: %u\n", ntohs(udpHeader->dest));
+		}
+		pthread_mutex_unlock(&userbuffer_lock);
 		if (buf_ent.is_inbound == 0) {
-			process_outbound_packets(buf_ent.packet);
+			process_outbound_packets(&(buf_ent.packet));
 		} else if (buf_ent.is_inbound == 1) {
-			process_inbound_packets(buf_ent.packet);
+			process_inbound_packets(&(buf_ent.packet));
 		}
 		
 		pthread_mutex_lock(&userbuffer_lock);
@@ -139,36 +143,21 @@ void *process_packets(void *args) {
 			printf("dest port: %u\n", ntohs(udpHeader->dest));
 		}
 
-		/*
-		ipHeader = (struct iphdr *) buf_ent.packet;
-		ipHeader = (struct iphdr *) buf_ent.packet;
-		udpHeader = (struct udphdr *) (((char *) ipHeader) + ipHeader->ihl*4);
-		saddr.s_addr = ipHeader->saddr;
-		daddr.s_addr = ipHeader->daddr;
-		strcpy(cs, inet_ntoa(saddr));
-		strcpy(cd, inet_ntoa(daddr));
-
-		printf("after:\n");
-		printf("source ip: %s\n", cs);
-		printf("dest ip: %s\n", cd);
-		printf("source port: %u\n", ntohs(udpHeader->source));
-		printf("dest port: %u\n", ntohs(udpHeader->dest));
-		*/
-		
 		pthread_mutex_lock(&tokens_lock);
 		// wait for available token
 		while (tokens == 0) {
-			pthread_mutex_unlock(&tokens_lock);
+			pthread_cond_wait(&available_token, &tokens_lock);
 		}
 		// consume token
 		tokens--;
 		pthread_mutex_unlock(&tokens_lock);
 		
 		// send out packet by waiting for tokens
-		printf("accpeting\n");
 		// set verdict
 		// nfq_set_verdict(myQueue, id, NF_ACCEPT, sizeof(buf_ent.packet), buf_ent.packet);
-		nfq_set_verdict(myQueue, id, NF_ACCEPT, 0, NULL);
+		printf("Set verdict length: %d", buf_ent.length);
+		nfq_set_verdict(myQueue, id, NF_ACCEPT, buf_ent.length, buf_ent.packet);
+		//nfq_set_verdict(myQueue, id, NF_ACCEPT, 0, NULL);
 		/*
 		pthread_mutex_lock(&userbuffer_lock);
 		printf("Before shifting the buffer\n");
@@ -222,7 +211,8 @@ void *process_packets(void *args) {
 	pthread_exit(NULL);
 }
 
-void process_inbound_packets(unsigned char *packet) {
+void process_inbound_packets(unsigned char **pkt) {
+	unsigned char *packet = *pkt;
 	struct iphdr *ipHeader;
 	struct udphdr *udpHeader;
 	unsigned int ip_in_nat, destination_ip, source_port, destination_port, 
@@ -247,14 +237,15 @@ void process_inbound_packets(unsigned char *packet) {
 	
 	// change dest port
 	udpHeader->dest = htons(nat_entry->internal_port);
-	udpHeader->check = udp_checksum(packet);
+	udpHeader->check = htonl(udp_checksum(packet));
 
 	// destination IP unchanged
 	ipHeader->daddr = htonl(nat_entry->internal_ip);
-	ipHeader->check = ip_checksum(packet);
+	ipHeader->check = htonl(ip_checksum(packet));
 }
 
-void process_outbound_packets(unsigned char *packet) {
+void process_outbound_packets(unsigned char **pkt) {
+	unsigned char *packet = *pkt;
 	struct iphdr *ipHeader;
 	struct udphdr *udpHeader;
 	unsigned int ip_in_nat, source_ip, source_port, destination_port;
@@ -388,6 +379,8 @@ static int Callback(nfq_q_handle* myQueue, struct nfgenmsg* msg,
 	buf_ent->id = id;
 	buf_ent->is_inbound = is_inbound;
 	buf_ent->packet = pktData;
+	buf_ent->length = len;
+	printf("length: %d\n", len);
 	pthread_mutex_unlock(&userbuffer_lock);
 	return 0;
 }
@@ -574,6 +567,7 @@ void *release_tokens(void *args) {
 			tokens += FILL_RATE;
 		}
 		pthread_mutex_unlock(&tokens_lock);
+		pthread_cond_signal(&available_token);
 		sleep(1);
 	}
 }
