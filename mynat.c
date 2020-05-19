@@ -98,18 +98,19 @@ void *process_packets(void *args) {
 
 		id = buf_ent.id;
 		ipHeader = (struct iphdr *) buf_ent.packet;
+/*
 		printf("Received Source IP: %u\n", ntohl(ipHeader->saddr));
 		printf("Received Destination IP: %u\n", ntohl(ipHeader->daddr));
 		printf("Received IP Checksum: %d\n", ntohl(ipHeader->check));
 		printf("\n");
 		fflush(stdout);
-			
+*/			
 		// get port number from udp header
 		udpHeader = (struct udphdr *) (((char *) ipHeader) + ipHeader->ihl*4);
-		printf("Received Source port: %u\n", udpHeader->source);
+/*		printf("Received Source port: %u\n", udpHeader->source);
 		printf("Received Destination port: %u\n", udpHeader->dest);
 		printf("Received UDP Checksum: %u\n", udpHeader->check);
-		
+*/		
 		if (buf_ent.is_inbound == 0) {
 			process_outbound_packets(buf_ent.packet);
 		} else if (buf_ent.is_inbound == 1) {
@@ -122,14 +123,14 @@ void *process_packets(void *args) {
 		printf("Before shifting the buffer\n");
 		for (int j = 0; j <= buf.end; j++) {
 			e = buf.entries[j];
-			printf("buffer entry id:\n%d\n", e.id);
+			printf("buffer entry id: %d\n", e.id);
 			// printf("NAT entries:\n");
 			// printf("Internal ip: %d, Internal port: %d, Translated port: %d\n", 
 			// 	e.nat_entry->internal_ip, e.nat_entry->internal_port,  e.nat_entry->translated_port);
 		}
 
 		// move up the queue
-		printf("%d\n", buf.end);
+		printf("Buffer end: %d\n", buf.end);
 		pthread_mutex_lock(&userbuffer_lock);
 		for (i = 1; i <= buf.end; i++) {
 			buf.entries[i-1] = buf.entries[i];
@@ -137,11 +138,11 @@ void *process_packets(void *args) {
 		memset(&buf.entries[buf.end], 0, sizeof(struct buffer_entry));
 		buf.end--;
 		pthread_mutex_unlock(&userbuffer_lock);
-		printf("%d\n", buf.end);
+		printf("New buffer end: %d\n", buf.end);
 		printf("After shifting the buffer\n");
 		for (int j = 0; j <= buf.end; j++) {
 			e = buf.entries[j];
-			printf("buffer entry id:\n%d\n", e.id);
+			printf("buffer entry id: %d\n", e.id);
 			// printf("NAT entries:\n");
 			// printf("Internal ip: %d, Internal port: %d, Translated port: %d\n", 
 			// 	e.nat_entry->internal_ip, e.nat_entry->internal_port,  e.nat_entry->translated_port);
@@ -328,15 +329,17 @@ void print_nat_table() {
 	struct in_addr addr_in, addr_tran;
 	struct nat *entry;
 	addr_tran.s_addr = htonl(IP);
-	printf(" %s | %s | %s | %s \n", 
+	char c[16];
+	strcpy(c, inet_ntoa(addr_tran));
+	printf(" %15s | %13s | %15s | %15s \n", 
 	"Internal IP", "Internal Port", "Translated IP", "Translated Port");
 	for(i = 0; i < PORT_RANGE; i++) {
 		if (nat_entries[i].internal_ip != 0) {
 			entry = &nat_entries[i];
 			addr_in.s_addr = htonl(entry->internal_ip);
-			printf(" %11s | %13u | %13s | %15u \n",
+			printf(" %15s | %13u | %15s | %15u \n",
 			inet_ntoa(addr_in), entry->internal_port,
-			inet_ntoa(addr_tran), entry->translated_port);
+			c, entry->translated_port);
 		}
 	}
 }
