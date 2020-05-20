@@ -24,6 +24,7 @@ pthread_mutex_t userbuffer_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t tokens_lock = PTHREAD_MUTEX_INITIALIZER;
 
 pthread_cond_t available_token = PTHREAD_COND_INITIALIZER;
+pthread_cond_t has_entry = PTHREAD_COND_INITIALIZER;
 
 void get_args(int argc, char **argv);
 void invalid_args();
@@ -93,9 +94,8 @@ void *process_packets(void *args) {
 
 	while (1) {
 		pthread_mutex_lock(&userbuffer_lock);
-		if (buf.end == -1) {
-			pthread_mutex_unlock(&userbuffer_lock);
-			continue;
+		while (buf.end == -1) {
+			pthread_cond_wait(&has_entry, &userbuffer_lock);
 		}
 		buf_ent = buf.entries[0];
 		pthread_mutex_unlock(&userbuffer_lock);
@@ -154,10 +154,8 @@ void *process_packets(void *args) {
 		
 		// send out packet by waiting for tokens
 		// set verdict
-		// nfq_set_verdict(myQueue, id, NF_ACCEPT, sizeof(buf_ent.packet), buf_ent.packet);
 		printf("Set verdict length: %d\n", buf_ent.length);
 		nfq_set_verdict(myQueue, id, NF_ACCEPT, buf_ent.length, buf_ent.packet);
-		//nfq_set_verdict(myQueue, id, NF_ACCEPT, 0, NULL);
 		/*
 		pthread_mutex_lock(&userbuffer_lock);
 		printf("Before shifting the buffer\n");
@@ -385,6 +383,7 @@ static int Callback(nfq_q_handle* myQueue, struct nfgenmsg* msg,
 	buf_ent->packet = copied_pkt;
 	buf_ent->length = len;
 	pthread_mutex_unlock(&userbuffer_lock);
+	pthread_cond_signal(&has_entry);
 	return 0;
 }
 
