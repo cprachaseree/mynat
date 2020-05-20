@@ -155,7 +155,7 @@ void *process_packets(void *args) {
 		// send out packet by waiting for tokens
 		// set verdict
 		// nfq_set_verdict(myQueue, id, NF_ACCEPT, sizeof(buf_ent.packet), buf_ent.packet);
-		printf("Set verdict length: %d", buf_ent.length);
+		printf("Set verdict length: %d\n", buf_ent.length);
 		nfq_set_verdict(myQueue, id, NF_ACCEPT, buf_ent.length, buf_ent.packet);
 		//nfq_set_verdict(myQueue, id, NF_ACCEPT, 0, NULL);
 		/*
@@ -237,11 +237,11 @@ void process_inbound_packets(unsigned char **pkt) {
 	
 	// change dest port
 	udpHeader->dest = htons(nat_entry->internal_port);
-	udpHeader->check = htonl(udp_checksum(packet));
+	udpHeader->check = udp_checksum(packet);
 
 	// destination IP unchanged
 	ipHeader->daddr = htonl(nat_entry->internal_ip);
-	ipHeader->check = htonl(ip_checksum(packet));
+	ipHeader->check = ip_checksum(packet);
 }
 
 void process_outbound_packets(unsigned char **pkt) {
@@ -342,6 +342,7 @@ static int Callback(nfq_q_handle* myQueue, struct nfgenmsg* msg,
 		nfq_data* pkt, void *cbData) {
 
 	unsigned char *pktData;
+	unsigned char *copied_pkt;
 	unsigned int id;
 	nfqnl_msg_packet_hdr *header;
 	if ((header = nfq_get_msg_packet_hdr(pkt))) {
@@ -371,16 +372,18 @@ static int Callback(nfq_q_handle* myQueue, struct nfgenmsg* msg,
 			return nfq_set_verdict(myQueue, id, NF_DROP, 0, NULL);
 		}
 	}
-	
+	// create copied packet to put into buffer
+	copied_pkt = (unsigned char *) calloc(len, sizeof(unsigned char));
+	memcpy(copied_pkt, pktData, len);
+
 	// insert to buffer	
 	pthread_mutex_lock(&userbuffer_lock);
 	buf.end++;
 	buf_ent = &buf.entries[buf.end];
 	buf_ent->id = id;
 	buf_ent->is_inbound = is_inbound;
-	buf_ent->packet = pktData;
+	buf_ent->packet = copied_pkt;
 	buf_ent->length = len;
-	printf("length: %d\n", len);
 	pthread_mutex_unlock(&userbuffer_lock);
 	return 0;
 }
