@@ -237,10 +237,10 @@ void process_inbound_packets(unsigned char **pkt) {
 	
 	// change dest port
 	udpHeader->dest = htons(nat_entry->internal_port);
-	udpHeader->check = udp_checksum(packet);
-
 	// destination IP unchanged
 	ipHeader->daddr = htonl(nat_entry->internal_ip);
+	
+	udpHeader->check = udp_checksum(packet);
 	ipHeader->check = ip_checksum(packet);
 }
 
@@ -273,10 +273,10 @@ void process_outbound_packets(unsigned char **pkt) {
 	}
 
 	udpHeader->source = htons(nat_entry->translated_port);
-	udpHeader->check = udp_checksum(packet);
-
-	// destination IP unchanged
 	ipHeader->saddr = htonl(IP);
+	
+	udpHeader->check = udp_checksum(packet);
+	// destination IP unchanged
 	ipHeader->check = ip_checksum(packet);
 }
 
