@@ -313,7 +313,7 @@ void *read_packets(void *args) {
 	struct nfnl_handle *netlinkHandle;
 
 	int fd, res;
-	char buf[1500]; // MTU size
+	char buf[2072];
 	netlinkHandle = nfq_nfnlh(nfqHandle);
 	fd = nfnl_fd(netlinkHandle);
 
@@ -337,6 +337,7 @@ static int Callback(nfq_q_handle* myQueue, struct nfgenmsg* msg,
 		// printf("id: %u\n", id);
 	}
 	int len = nfq_get_payload(pkt, (unsigned char**)&pktData);
+	// printf("nfq payload length: %d\n", len);
 	// get ip info from payload
 	struct iphdr *ipHeader = (struct iphdr *) pktData;
 
@@ -476,6 +477,7 @@ void get_args(int argc, char **argv) {
         printf("Error in fill rate argument\n");
     }
 	FILL_RATE = (int) l;
+	/*
 	printf("Arguments: \n");
 	printf("IP: %s\n", argv[1]);
 	printf("LAN: %s\n", argv[2]);
@@ -483,6 +485,7 @@ void get_args(int argc, char **argv) {
 	printf("BUCKET_SIZE: %d\n", BUCKET_SIZE);
 	printf("FILL_RATE: %d\n", FILL_RATE);
 	printf("\n");
+	*/
 }
 
 // returns 1 if inbound returns 0 if outbound
